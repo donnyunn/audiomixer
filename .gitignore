@@ -1,3 +1,4 @@
 .metadata/
 audio_mixer_v1/Debug/
-
+hexfiles/
+tools/*.txt
