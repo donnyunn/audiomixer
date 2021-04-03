@@ -1,13 +1,14 @@
+import os
 import numpy as np
 
 STM_FREQ = 1000000
-SIN_FREQ = 1000
+SIN_FREQ = 2000
 AMPLITUDE = 1023
 OFFSET = 2048
 
 N = int(STM_FREQ/SIN_FREQ)
-f = open("result.txt", 'w')
-line = "Frequency: %d Hz\n" % 10000
+f = open(os.path.dirname(os.path.abspath(__file__)) + "/result.txt", 'w')
+line = "Frequency: %d Hz\n" % SIN_FREQ
 f.write(line)
 line = "NUM: %d\n\n    " % N
 f.write(line)
