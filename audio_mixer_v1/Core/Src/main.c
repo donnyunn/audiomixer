@@ -40,6 +40,13 @@ typedef struct {
   bool txUart;
 }main_app_t;
 
+enum {
+  DIPSW_5K = 0b00,
+  DIPSW_10K = 0b10,
+  DIPSW_15K = 0b01,
+  DIPSW_20K = 0b11,
+};
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -53,6 +60,7 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 DAC_HandleTypeDef hdac1;
 DAC_HandleTypeDef hdac2;
@@ -73,8 +81,9 @@ static main_app_t app = {
   .txUart = false,
 };
 
-uint32_t adcValue = 2048;
-uint8_t tx[5];
+uint16_t adcValue[3];
+uint16_t adcBuf[3];
+uint8_t tx[15];
 
 /* USER CODE END PV */
 
@@ -107,16 +116,16 @@ void updateDipSw(void)
 {
   HAL_DAC_Stop_DMA(&hdac1, DAC1_CHANNEL_1);
   switch (app.dipSw) {
-    case 0x00:
+    case DIPSW_5K:
       HAL_DAC_Start_DMA(&hdac1, DAC1_CHANNEL_1, (uint32_t*)sine_5khz, SINE_5KHZ_NUM, DAC_ALIGN_12B_R);
     break;
-    case 0x02:
+    case DIPSW_10K:
       HAL_DAC_Start_DMA(&hdac1, DAC1_CHANNEL_1, (uint32_t*)sine_10khz, SINE_10KHZ_NUM, DAC_ALIGN_12B_R);
     break;
-    case 0x01:
+    case DIPSW_15K:
       HAL_DAC_Start_DMA(&hdac1, DAC1_CHANNEL_1, (uint32_t*)sine_15khz, SINE_15KHZ_NUM, DAC_ALIGN_12B_R);
     break;
-    case 0x03:
+    case DIPSW_20K:
       HAL_DAC_Start_DMA(&hdac1, DAC1_CHANNEL_1, (uint32_t*)sine_20khz, SINE_20KHZ_NUM, DAC_ALIGN_12B_R);
     break;
   }
@@ -175,10 +184,11 @@ int main(void)
       case TASK_INIT:
         app.dipSw = getDipSw();
         updateDipSw();
-        HAL_DAC_Start(&hdac1, DAC1_CHANNEL_2);
+        // HAL_DAC_Start(&hdac1, DAC1_CHANNEL_2);
         HAL_DAC_Start_DMA(&hdac2, DAC2_CHANNEL_1, (uint32_t*)sine_1khz, SINE_1KHZ_NUM, DAC_ALIGN_12B_R);
 
-        HAL_ADC_Start_IT(&hadc1);
+        // HAL_ADC_Start_IT(&hadc1);
+        HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValue, 3);
 
         HAL_TIM_Base_Start(&htim2);
         HAL_TIM_Base_Start_IT(&htim3);
@@ -190,13 +200,25 @@ int main(void)
           updateDipSw();
         }
         if (app.txUart) {
-          tx[0] = ((adcValue % 10000) / 1000) + '0';
-          tx[1] = ((adcValue % 1000) / 100) + '0';
-          tx[2] = ((adcValue % 100) / 10) + '0';
-          tx[3] = (adcValue % 10) + '0';
-          tx[4] = '\n';
-          HAL_UART_Transmit(&huart1, tx, 5, 100);
+          tx[0] = ((adcBuf[0] % 10000) / 1000) + '0';
+          tx[1] = ((adcBuf[0] % 1000) / 100) + '0';
+          tx[2] = ((adcBuf[0] % 100) / 10) + '0';
+          tx[3] = (adcBuf[0] % 10) + '0';
+          tx[4] = ',';
+          tx[5] = ((adcBuf[1] % 10000) / 1000) + '0';
+          tx[6] = ((adcBuf[1] % 1000) / 100) + '0';
+          tx[7] = ((adcBuf[1] % 100) / 10) + '0';
+          tx[8] = (adcBuf[1] % 10) + '0';
+          tx[9] = ',';
+          tx[10] = ((adcBuf[2] % 10000) / 1000) + '0';
+          tx[11] = ((adcBuf[2] % 1000) / 100) + '0';
+          tx[12] = ((adcBuf[2] % 100) / 10) + '0';
+          tx[13] = (adcBuf[2] % 10) + '0';
+          tx[14] = '\n';
+          HAL_UART_Transmit(&huart1, tx, 15, 100);
           app.txUart = false;
+
+          HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValue, 3);
         }
         HAL_Delay(1);
       break;
@@ -276,13 +298,13 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 3;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
@@ -303,9 +325,25 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.SamplingTime = ADC_SAMPLETIME_181CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_601CYCLES_5;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -345,14 +383,6 @@ static void MX_DAC1_Init(void)
   sConfig.DAC_Trigger = DAC_TRIGGER_T2_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** DAC channel OUT2 config
-  */
-  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
-  sConfig.DAC_OutputSwitch = DAC_OUTPUTSWITCH_ENABLE;
-  if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -507,7 +537,7 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
@@ -564,6 +594,9 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
@@ -589,66 +622,60 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, MIXSW1_Pin|TEMPOLED1_Pin|MIXMIC_Pin|TEMPOLED2_Pin
-                          |LED1K_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, MIXSW1_Pin|LED5K_Pin|LED1K_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, MIXSW2_Pin|MIXSW3_Pin|TEMPOLED3_Pin|LED10K_Pin
-                          |LED3X_Pin|LEDMIC_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, MIXSW2_Pin|LED10K_Pin|LED15K_Pin|LED20K_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SPKAMP_GPIO_Port, SPKAMP_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : KEY4_Pin */
-  GPIO_InitStruct.Pin = KEY4_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  HAL_GPIO_Init(KEY4_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC14 PC15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15;
+  /*Configure GPIO pins : PC13 PC14 PC15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA1 PA2 PA3 PA9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_9;
+  /*Configure GPIO pins : PA3 PA5 PA9 PA11
+                           PA12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_9|GPIO_PIN_11
+                          |GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : MIXSW1_Pin TEMPOLED1_Pin MIXMIC_Pin TEMPOLED2_Pin
-                           LED1K_Pin */
-  GPIO_InitStruct.Pin = MIXSW1_Pin|TEMPOLED1_Pin|MIXMIC_Pin|TEMPOLED2_Pin
-                          |LED1K_Pin;
+  /*Configure GPIO pins : MIXSW1_Pin LED5K_Pin LED1K_Pin */
+  GPIO_InitStruct.Pin = MIXSW1_Pin|LED5K_Pin|LED1K_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : MIXSW2_Pin MIXSW3_Pin SPKAMP_Pin TEMPOLED3_Pin
-                           LED10K_Pin LED3X_Pin LEDMIC_Pin */
-  GPIO_InitStruct.Pin = MIXSW2_Pin|MIXSW3_Pin|SPKAMP_Pin|TEMPOLED3_Pin
-                          |LED10K_Pin|LED3X_Pin|LEDMIC_Pin;
+  /*Configure GPIO pins : MIXSW2_Pin SPKAMP_Pin LED10K_Pin LED15K_Pin
+                           LED20K_Pin */
+  GPIO_InitStruct.Pin = MIXSW2_Pin|SPKAMP_Pin|LED10K_Pin|LED15K_Pin
+                          |LED20K_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB10 PB11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+  /*Configure GPIO pins : PB1 PB10 PB11 PB14
+                           PB15 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_14
+                          |GPIO_PIN_15|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DIP1_Pin DIP2_Pin DIP3_Pin */
-  GPIO_InitStruct.Pin = DIP1_Pin|DIP2_Pin|DIP3_Pin;
+  /*Configure GPIO pins : DIP1_Pin DIP2_Pin */
+  GPIO_InitStruct.Pin = DIP1_Pin|DIP2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : KEY1_Pin KEY2_Pin KEY3_Pin */
-  GPIO_InitStruct.Pin = KEY1_Pin|KEY2_Pin|KEY3_Pin;
+  /*Configure GPIO pins : KEY1_Pin KEY2_Pin */
+  GPIO_InitStruct.Pin = KEY1_Pin|KEY2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -656,9 +683,6 @@ static void MX_GPIO_Init(void)
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
@@ -676,24 +700,23 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     break;
     case KEY2_Pin:
       level = HAL_GPIO_ReadPin(KEY2_GPIO_Port, KEY2_Pin);
-      nlevel = (level != GPIO_PIN_RESET) ? GPIO_PIN_RESET : GPIO_PIN_SET;
-      HAL_GPIO_WritePin(SPKAMP_GPIO_Port, SPKAMP_Pin, nlevel);
+      // nlevel = (level != GPIO_PIN_RESET) ? GPIO_PIN_RESET : GPIO_PIN_SET;
+      // HAL_GPIO_WritePin(SPKAMP_GPIO_Port, SPKAMP_Pin, nlevel);
       HAL_GPIO_WritePin(MIXSW2_GPIO_Port, MIXSW2_Pin, level);
-      HAL_GPIO_WritePin(LED10K_GPIO_Port, LED10K_Pin, level);
-    break;
-    case KEY3_Pin:
-      level = HAL_GPIO_ReadPin(KEY3_GPIO_Port, KEY3_Pin);
-      nlevel = (level != GPIO_PIN_RESET) ? GPIO_PIN_RESET : GPIO_PIN_SET;
-      HAL_GPIO_WritePin(SPKAMP_GPIO_Port, SPKAMP_Pin, nlevel);
-      HAL_GPIO_WritePin(MIXSW3_GPIO_Port, MIXSW3_Pin, level);
-      HAL_GPIO_WritePin(LED3X_GPIO_Port, LED3X_Pin, level);
-    break;
-    case KEY4_Pin:
-      level = HAL_GPIO_ReadPin(KEY4_GPIO_Port, KEY4_Pin);
-      nlevel = (level != GPIO_PIN_RESET) ? GPIO_PIN_RESET : GPIO_PIN_SET;
-      HAL_GPIO_WritePin(SPKAMP_GPIO_Port, SPKAMP_Pin, nlevel);
-      HAL_GPIO_WritePin(MIXMIC_GPIO_Port, MIXMIC_Pin, level);
-      HAL_GPIO_WritePin(LEDMIC_GPIO_Port, LEDMIC_Pin, level);
+      switch (app.dipSw) {
+        case DIPSW_5K:
+          HAL_GPIO_WritePin(LED5K_GPIO_Port, LED5K_Pin, level);
+        break;
+        case DIPSW_10K:
+          HAL_GPIO_WritePin(LED10K_GPIO_Port, LED10K_Pin, level);
+        break;
+        case DIPSW_15K:
+          HAL_GPIO_WritePin(LED15K_GPIO_Port, LED15K_Pin, level);
+        break;
+        case DIPSW_20K:
+          HAL_GPIO_WritePin(LED20K_GPIO_Port, LED20K_Pin, level);
+        break;
+      }
     break;
   }
 }
@@ -707,9 +730,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-  adcValue = HAL_ADC_GetValue(hadc);
-  HAL_DAC_SetValue(&hdac1, DAC1_CHANNEL_2, DAC_ALIGN_12B_R, adcValue);
-  HAL_ADC_Start_IT(&hadc1);
+  for (int i = 0; i < 3; i++) {
+    adcBuf[i] = adcValue[i];
+  }
+
+  // adcValue[adcCh%3] = HAL_ADC_GetValue(hadc);
+  // adcCh++;
+  // HAL_DAC_SetValue(&hdac1, DAC1_CHANNEL_2, DAC_ALIGN_12B_R, adcValue);
+  // HAL_ADC_Start_IT(&hadc1);
 }
 
 /* USER CODE END 4 */
