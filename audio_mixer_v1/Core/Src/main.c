@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
+#include <stdlib.h>
 #include "waves.h"
 
 /* USER CODE END Includes */
@@ -38,6 +39,7 @@ typedef struct {
   task_t task;
   uint8_t dipSw;
   bool txUart;
+  bool adcCplt;
 }main_app_t;
 
 enum {
@@ -51,6 +53,7 @@ enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,11 +82,15 @@ static main_app_t app = {
   .task = TASK_INIT,
   .dipSw = 0x00,
   .txUart = false,
+  .adcCplt = false,
 };
 
+uint16_t ADC_DEFAULT[3] = {0,};
+uint16_t XYZ_OFFSET[3] = {0, 0, 707}; 
+uint16_t XYZ_GAIN[3] = {32, 32, 32};
 uint16_t adcValue[3];
-uint16_t adcBuf[3];
-uint8_t tx[15];
+int16_t adcBuf[3];
+uint8_t tx[32];
 
 /* USER CODE END PV */
 
@@ -104,6 +111,19 @@ static void MX_TIM3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void ledIndicate(void)
+{
+  HAL_Delay(200);
+  for (int i = 0; i < 4; i++) {
+    HAL_GPIO_TogglePin(LED1K_GPIO_Port, LED1K_Pin);
+    HAL_GPIO_TogglePin(LED5K_GPIO_Port, LED5K_Pin);
+    HAL_GPIO_TogglePin(LED10K_GPIO_Port, LED10K_Pin);
+    HAL_GPIO_TogglePin(LED15K_GPIO_Port, LED15K_Pin);
+    HAL_GPIO_TogglePin(LED20K_GPIO_Port, LED20K_Pin);
+    HAL_Delay(200);
+  }
+}
+
 uint8_t getDipSw(void)
 {
   uint8_t ret;
@@ -131,6 +151,79 @@ void updateDipSw(void)
   }
 }
 
+void adcDataProcessing(int16_t* buf)
+{
+  static int16_t prvBuf[3] = {0,};
+  
+  buf[0] -= 1862;
+  buf[1] -= 1862;
+  buf[2] -= 1862;
+
+  for (int i = 0; i < 3; i++) {
+    // buf[i] = buf[i] - ADC_DEFAULT[i];
+    // buf[i] = buf[i] * XYZ_GAIN[i];
+
+    // buf[i] = (15 * prvBuf[i] + buf[i]) >> 4;
+    buf[i] = prvBuf[i] + (0.1 * (buf[i] - prvBuf[i]));
+    prvBuf[i] = buf[i];
+  }
+}
+
+#define SMPL 256
+void updateADCDefault(void)
+{
+  uint32_t tmp[3] = {0,};
+  uint16_t xymean;
+  ADC_DEFAULT[0] = 0;
+  ADC_DEFAULT[1] = 0;
+  ADC_DEFAULT[2] = 0;
+  for (int i = 0; i < SMPL; i++) {
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValue, 3);
+    while (app.adcCplt != true);
+    app.adcCplt = false;
+
+    tmp[0] += adcBuf[0];
+    tmp[1] += adcBuf[1];
+    tmp[2] += adcBuf[2];
+  }
+  ADC_DEFAULT[0] = (uint16_t)(tmp[0] / SMPL);
+  ADC_DEFAULT[1] = (uint16_t)(tmp[1] / SMPL);
+  ADC_DEFAULT[2] = (uint16_t)(tmp[2] / SMPL);
+
+  xymean = (uint16_t)((ADC_DEFAULT[0] + ADC_DEFAULT[1]) / 2);
+  ADC_DEFAULT[2] -= abs(ADC_DEFAULT[2]-xymean);
+
+  // ADC_DEFAULT[0] += XYZ_OFFSET[0];
+  // ADC_DEFAULT[1] += XYZ_OFFSET[1];
+  // ADC_DEFAULT[2] += XYZ_OFFSET[2];
+}
+
+int intBuf2asciiBuf(int16_t* iBuf, uint8_t* aBuf)
+{
+  int i = 0;
+  int a = 0;
+  int16_t iTmp;
+
+  for (i = 1; i < 2; i++) {
+    if (iBuf[i] < 0) {
+      aBuf[a++] = '-';
+      iTmp = -1 * iBuf[i];
+    } else {
+      aBuf[a++] = ' ';
+      iTmp = iBuf[i];
+    }
+    aBuf[a++] = ((iTmp % 10000) / 1000) + '0';
+    aBuf[a++] = ((iTmp % 1000) / 100) + '0';
+    aBuf[a++] = ((iTmp % 100) / 10) + '0';
+    aBuf[a++] = (iTmp % 10) + '0';
+    aBuf[a++] = ',';
+  }
+  aBuf[a++] = '\n';
+  // aBuf[a++] = '\r';
+
+  return a;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -140,6 +233,7 @@ void updateDipSw(void)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+  int len = 0;
 
   /* USER CODE END 1 */
 
@@ -182,12 +276,15 @@ int main(void)
     /* USER CODE BEGIN 3 */
     switch (app.task) {
       case TASK_INIT:
+        ledIndicate();
+
         app.dipSw = getDipSw();
         updateDipSw();
         // HAL_DAC_Start(&hdac1, DAC1_CHANNEL_2);
         HAL_DAC_Start_DMA(&hdac2, DAC2_CHANNEL_1, (uint32_t*)sine_1khz, SINE_1KHZ_NUM, DAC_ALIGN_12B_R);
 
         // HAL_ADC_Start_IT(&hadc1);
+        updateADCDefault();
         HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValue, 3);
 
         HAL_TIM_Base_Start(&htim2);
@@ -200,22 +297,10 @@ int main(void)
           updateDipSw();
         }
         if (app.txUart) {
-          tx[0] = ((adcBuf[0] % 10000) / 1000) + '0';
-          tx[1] = ((adcBuf[0] % 1000) / 100) + '0';
-          tx[2] = ((adcBuf[0] % 100) / 10) + '0';
-          tx[3] = (adcBuf[0] % 10) + '0';
-          tx[4] = ',';
-          tx[5] = ((adcBuf[1] % 10000) / 1000) + '0';
-          tx[6] = ((adcBuf[1] % 1000) / 100) + '0';
-          tx[7] = ((adcBuf[1] % 100) / 10) + '0';
-          tx[8] = (adcBuf[1] % 10) + '0';
-          tx[9] = ',';
-          tx[10] = ((adcBuf[2] % 10000) / 1000) + '0';
-          tx[11] = ((adcBuf[2] % 1000) / 100) + '0';
-          tx[12] = ((adcBuf[2] % 100) / 10) + '0';
-          tx[13] = (adcBuf[2] % 10) + '0';
-          tx[14] = '\n';
-          HAL_UART_Transmit(&huart1, tx, 15, 100);
+          adcDataProcessing(adcBuf);
+          len = intBuf2asciiBuf(adcBuf, tx);
+
+          HAL_UART_Transmit(&huart1, tx, len, 100);
           app.txUart = false;
 
           HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValue, 3);
@@ -325,7 +410,7 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.SamplingTime = ADC_SAMPLETIME_601CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -733,6 +818,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   for (int i = 0; i < 3; i++) {
     adcBuf[i] = adcValue[i];
   }
+  app.adcCplt = true;
 
   // adcValue[adcCh%3] = HAL_ADC_GetValue(hadc);
   // adcCh++;
